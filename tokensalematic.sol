@@ -64,7 +64,7 @@ contract LOIPreIEO is Context, Ownable {
     uint256 public constant vestingCliff = 30 days; // Updated to 1 month (30 days)
 
     // Token price
-    uint256 public tokenPrice = 8e15; // $0.0080 per token, in USD
+    uint256 public tokenPrice = 0; // $0.0080 per token, in USD
 
     // Investor counter
     uint256 public investorCount;
@@ -190,6 +190,12 @@ contract LOIPreIEO is Context, Ownable {
         cooldownEndTime = block.timestamp + COOLDOWN_PERIOD;
     }
 
+    function convertLOItoMatic() internal returns (uint256) {
+        uint256 maticPrice = fetchMATICPrice();
+        tokenPrice = SafeMath.mul(800000, 1e18).div(maticPrice);
+        return tokenPrice;
+    }
+
     // Purchase Tokens in Pre-IEO Round with Matic
     function purchaseTokens() external payable isWhitelisted {
 
@@ -197,7 +203,8 @@ contract LOIPreIEO is Context, Ownable {
         // require(msg.value <= maxInvestmentMATIC, "Amount is more than the maximum investment amount");
 
         // Adjust the precision to match the number of decimal places in tokenPrice
-        uint256 tokensToBuy = msg.value.div(tokenPrice);
+        uint256 newTokenPrice = convertLOItoMatic();
+        uint256 tokensToBuy = msg.value / newTokenPrice;
         heWantsToBuy = tokensToBuy;
 
         // Adjust the tokensToBuy based on the number of decimal places in the LOI token
@@ -206,11 +213,11 @@ contract LOIPreIEO is Context, Ownable {
 
         // Apply tier-based bonus
         uint256 bonusPercentage;
-        if (msg.value >= 10 * 10**18 && msg.value <= 999 * 10**18) {
+        if (msg.value >= 10 * 10*18 && msg.value <= 999 * 10*18) {
             bonusPercentage = 42;
-        } else if (msg.value >= 1000 * 10**18 && msg.value <= 4999 * 10**18) {
+        } else if (msg.value >= 1000 * 10*18 && msg.value <= 4999 * 10*18) {
             bonusPercentage = 62;
-        } else if (msg.value >= 5000 * 10**18 && msg.value <= 10000 * 10**18) {
+        } else if (msg.value >= 5000 * 10*18 && msg.value <= 10000 * 10*18) {
             bonusPercentage = 82;
         } else {
             bonusPercentage = 0;
@@ -226,27 +233,31 @@ contract LOIPreIEO is Context, Ownable {
         );
 
         // Update the number of tokens sold and the investor's vested amount
-        tokensSold = SafeMath.add(tokensSold, SafeMath.add(tokensToBuy, bonusTokens));
+        tokensSold = SafeMath.add(tokensSold, tokensToBuy);
         if (vestedAmount[_msgSender()] == 0) {
             investorCount = SafeMath.add(investorCount, 1);
         }
-        vestedAmount[_msgSender()] = SafeMath.add(vestedAmount[_msgSender()], SafeMath.add(tokensToBuy, bonusTokens));
+        // vestedAmount[_msgSender()] = SafeMath.add(vestedAmount[_msgSender()], SafeMath.add(tokensToBuy, bonusTokens));
+        vestedAmount[_msgSender()] = SafeMath.add(vestedAmount[_msgSender()], tokensToBuy);
         vestingStart[_msgSender()] = block.timestamp.add(vestingCliff);
 
         // Transfer Matic from the investor to the contract
+
         require(
             payable(address(this)).send(msg.value),
             "Failed to transfer Matic"
         );
 
         // Transfer tokens to the investor
-        require(
-            IERC20(LOIContract).transfer(_msgSender(), SafeMath.add(tokensToBuy, bonusTokens)),
-            "Failed to transfer tokens"
-        );
+        // require(
+        //     // IERC20(LOIContract).transfer(_msgSender(), SafeMath.add(tokensToBuy, bonusTokens)),
+        //     IERC20(LOIContract).transfer(_msgSender(),tokensToBuy),
+        //     "Failed to transfer tokens"
+        // );
 
         // Emit event
         emit TokensPurchased(_msgSender(), SafeMath.add(tokensToBuy, bonusTokens));
+        emit TokensPurchased(_msgSender(), tokensToBuy);
         emit VestingStarted(_msgSender(), vestedAmount[_msgSender()], vestingStart[_msgSender()]);
     }
 
