@@ -7,9 +7,9 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-
-contract LOIPreIEO is Context, Ownable {
+contract BIN is Context, Ownable, ReentrancyGuard {
     using SafeMath for uint256;
 
     // Custom error for when the LOI token is not active
@@ -58,10 +58,10 @@ contract LOIPreIEO is Context, Ownable {
     uint256 public heWantsToBuy;
 
     // Vesting period duration in seconds
-    uint256 public vestingPeriod = 90 days; // Updated to 3 months (90 days)
+    uint256 public vestingPeriod = 3 minutes; // Updated to 3 months (90 days)
 
     // Vesting cliff duration in seconds
-    uint256 public constant vestingCliff = 30 days; // Updated to 1 month (30 days)
+    uint256 public constant vestingCliff = 1 minutes; // Updated to 1 month (30 days)
 
     // Token price
     uint256 public tokenPrice = 0; // $0.0080 per token, in USD
@@ -97,7 +97,7 @@ contract LOIPreIEO is Context, Ownable {
 
     modifier isVestingActive(address investor) {
         require(block.timestamp >= vestingStart[investor], "Vesting period has not started yet");
-        require(block.timestamp < vestingEnd[investor], "Vesting period has ended");
+        // require(block.timestamp < vestingEnd[investor], "Vesting period has ended");
         require(vestedAmount[investor] > 0, "No vested tokens for the investor");
         _;
     }
@@ -165,29 +165,23 @@ contract LOIPreIEO is Context, Ownable {
     }
 
     // Function to start the pre-IEO round
-    function startPreIEO(uint256 _totalTokens, uint256 _destroyTime) external onlyOwner {
-        require(!preIEOActive, "Pre-IEO already active");
-        require(_totalTokens > 0, "Invalid total tokens");
-        _destroyTime = block.timestamp + _destroyTime;
+function startPreIEO(uint256 _totalTokens, uint256 _destroyTime) external onlyOwner {
+    require(!preIEOActive, "Pre-IEO already active");
+    require(_totalTokens > 0, "Invalid total tokens");
+    destroyTime = block.timestamp + _destroyTime; // Update the destroyTime directly
 
-        updateInvestmentLimits();
+    updateInvestmentLimits();
 
-        totalTokens = _totalTokens; // Assign the provided totalTokens value
-        tokensSold = 0;
-        preIEOActive = true;
-        destroyTime = _destroyTime;
-    }
+    totalTokens = _totalTokens; // Assign the provided totalTokens value
+    tokensSold = 0;
+    preIEOActive = true;
+}
 
     // Stop the Pre-IEO Round
-    uint256 private constant COOLDOWN_PERIOD = 24 hours;
-    uint256 private cooldownEndTime;
-
     function stopPreIEO() external onlyOwner {
         require(preIEOActive, "Pre-IEO not active");
-        require(block.timestamp < cooldownEndTime, "Cooldown period has not ended");
 
         preIEOActive = false;
-        cooldownEndTime = block.timestamp + COOLDOWN_PERIOD;
     }
 
     function convertLOItoMatic() internal returns (uint256) {
@@ -197,88 +191,84 @@ contract LOIPreIEO is Context, Ownable {
     }
 
     // Purchase Tokens in Pre-IEO Round with Matic
-    function purchaseTokens() external payable isWhitelisted {
+    function purchaseTokens() external payable isWhitelisted nonReentrant {
+    // Check if the pre-IEO is active
+    require(preIEOActive, "Pre-IEO not active");
 
-        // require(msg.value >= minInvestmentMATIC, "Amount is less than the minimum investment amount");
-        // require(msg.value <= maxInvestmentMATIC, "Amount is more than the maximum investment amount");
+    // Check if the purchase amount is within the allowed range
+    // require(msg.value >= minInvestmentMATIC, "Amount is less than the minimum investment amount");
+    // require(msg.value <= maxInvestmentMATIC, "Amount is more than the maximum investment amount");
 
-        // Adjust the precision to match the number of decimal places in tokenPrice
-        uint256 newTokenPrice = convertLOItoMatic();
-        uint256 tokensToBuy = msg.value / newTokenPrice;
-        heWantsToBuy = tokensToBuy;
+    // Calculate the number of tokens to buy based on the current price
+    uint256 newTokenPrice = convertLOItoMatic();
+    uint256 tokensToBuy = msg.value / newTokenPrice;
 
-        // Adjust the tokensToBuy based on the number of decimal places in the LOI token
-        // uint256 tokenDecimals = 18; // Assuming the LOI token has 18 decimal places
-        // tokensToBuy = tokensToBuy.div(10**(18 - tokenDecimals));
-
-        // Apply tier-based bonus
-        uint256 bonusPercentage;
-        if (msg.value >= 10 * 10*18 && msg.value <= 999 * 10*18) {
-            bonusPercentage = 42;
-        } else if (msg.value >= 1000 * 10*18 && msg.value <= 4999 * 10*18) {
-            bonusPercentage = 62;
-        } else if (msg.value >= 5000 * 10*18 && msg.value <= 10000 * 10*18) {
-            bonusPercentage = 82;
-        } else {
-            bonusPercentage = 0;
-        }
-
-        // Calculate bonus tokens using SafeMath
-        uint256 bonusTokens = SafeMath.div(SafeMath.mul(tokensToBuy, bonusPercentage), 100);
-
-        // Ensure that the number of tokens to buy is within the available limit using SafeMath
-        require(
-            SafeMath.add(tokensSold, SafeMath.add(tokensToBuy, bonusTokens)) <= totalTokens,
-            "Not enough tokens left for sale or arithmetic overflow"
-        );
-
-        // Update the number of tokens sold and the investor's vested amount
-        tokensSold = SafeMath.add(tokensSold, tokensToBuy);
-        if (vestedAmount[_msgSender()] == 0) {
-            investorCount = SafeMath.add(investorCount, 1);
-        }
-        // vestedAmount[_msgSender()] = SafeMath.add(vestedAmount[_msgSender()], SafeMath.add(tokensToBuy, bonusTokens));
-        vestedAmount[_msgSender()] = SafeMath.add(vestedAmount[_msgSender()], tokensToBuy);
-        vestingStart[_msgSender()] = block.timestamp.add(vestingCliff);
-
-        // Transfer Matic from the investor to the contract
-
-        require(
-            payable(address(this)).send(msg.value),
-            "Failed to transfer Matic"
-        );
-
-        // Transfer tokens to the investor
-        // require(
-        //     // IERC20(LOIContract).transfer(_msgSender(), SafeMath.add(tokensToBuy, bonusTokens)),
-        //     IERC20(LOIContract).transfer(_msgSender(),tokensToBuy),
-        //     "Failed to transfer tokens"
-        // );
-
-        // Emit event
-        emit TokensPurchased(_msgSender(), SafeMath.add(tokensToBuy, bonusTokens));
-        emit TokensPurchased(_msgSender(), tokensToBuy);
-        emit VestingStarted(_msgSender(), vestedAmount[_msgSender()], vestingStart[_msgSender()]);
+    // Apply tier-based bonus
+    uint256 bonusPercentage;
+    if (msg.value >= 10 * 10*18 && msg.value <= 999 * 10*18) {
+        bonusPercentage = 42;
+    } else if (msg.value >= 1000 * 10*18 && msg.value <= 4999 * 10*18) {
+        bonusPercentage = 62;
+    } else if (msg.value >= 5000 * 10*18 && msg.value <= 10000 * 10*18) {
+        bonusPercentage = 82;
+    } else {
+        bonusPercentage = 0;
     }
+
+    // Calculate bonus tokens using SafeMath
+    uint256 bonusTokens = SafeMath.div(SafeMath.mul(tokensToBuy, bonusPercentage), 100);
+
+    // Calculate the total number of tokens to buy, including the bonus tokens
+    uint256 totalTokensToBuy = tokensToBuy.add(bonusTokens);
+
+    // Ensure that the number of tokens to buy is within the available limit
+    require(tokensSold.add(totalTokensToBuy) <= totalTokens, "Not enough tokens left for sale or arithmetic overflow");
+
+    // Update the number of tokens sold and the investor's vested amount
+    tokensSold = tokensSold.add(totalTokensToBuy);
+    if (vestedAmount[_msgSender()] == 0) {
+        investorCount = investorCount.add(1);
+    }
+    vestedAmount[_msgSender()] = vestedAmount[_msgSender()].add(totalTokensToBuy);
+    vestingStart[_msgSender()] = block.timestamp.add(vestingCliff);
+
+    // Emit event for tokens purchased and vesting started
+    emit TokensPurchased(_msgSender(), totalTokensToBuy);
+    emit VestingStarted(_msgSender(), vestedAmount[_msgSender()], vestingStart[_msgSender()]);
+
+    // Check if the contract has enough allowance to transfer tokens on behalf of the investor
+    uint256 allowance = IERC20(LOIContract).allowance(_msgSender(), address(this));
+    if (allowance < totalTokensToBuy) {
+        // If the allowance is insufficient, approve the contract to spend tokens
+        IERC20(LOIContract).approve(address(this), totalTokensToBuy);
+    }
+
+    // Transfer Matic from the investor to the contract
+    require(payable(address(this)).send(msg.value), "Failed to transfer Matic");
+
+    // Transfer tokens to the investor
+    bool transferSuccess = IERC20(LOIContract).transfer(_msgSender(), totalTokensToBuy);
+    require(transferSuccess, "Failed to transfer tokens");
+}
 
     // Withdraw Matic from Contract
     function withdrawMatic() external onlyOwner {
-        address payable ownerAddress = payable(owner());
-        require(ownerAddress.send(address(this).balance), "not able to withdraw");
-    }
+    address payable ownerAddress = payable(owner());
+    ownerAddress.transfer(address(this).balance); // Simplified transfer function
+}
 
     // Withdraw Tokens from Contract
-    function withdrawTokens(uint256 _amount) external onlyOwner isLOIActive {
-        require(block.timestamp >= destroyTime, "Tokens are still locked");
-        uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
-        require(_amount <= LOIBalance, "Insufficient LOI tokens in contract");
-        require(_amount <= vestedAmount[owner()], "Insufficient vested tokens");
+function withdrawTokens(uint256 _amount) external onlyOwner isLOIActive nonReentrant {
+    require(block.timestamp >= destroyTime, "Tokens are still locked"); // Corrected spelling
+    uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
+    require(_amount <= LOIBalance, "Insufficient LOI tokens in contract");
+    require(_amount <= vestedAmount[owner()], "Insufficient vested tokens");
 
-        // Update the vested amount of the owner
-        vestedAmount[owner()] = vestedAmount[owner()].sub(_amount);
+    // Update the vested amount of the owner
+    vestedAmount[owner()] = vestedAmount[owner()].sub(_amount);
 
-        require(IERC20(LOIContract).transfer(owner(), _amount), "Token transfer failed");
-    }
+    IERC20(LOIContract).transferFrom(address(this), owner(), _amount);
+}
 
     // Get the Balance of LOI Tokens in Contract
     function getLOIBalance() external view returns (uint256) {
@@ -291,22 +281,22 @@ contract LOIPreIEO is Context, Ownable {
     }
 
     function startVesting() external {
-        require(preIEOActive == false, "Pre-IEO still active");
+    // require(preIEOActive == false, "Pre-IEO still active");
 
-        // Check if vesting has already started for the caller
-        require(vestingStart[_msgSender()] == 0, "Vesting already started for investor");
+    // Check if vesting has already started for the caller
+    require(vestingStart[_msgSender()] == 0, "Vesting already started for investor");
 
-        // Set vesting start time for the calling investor
-        vestingStart[_msgSender()] = block.timestamp;
+    // Set vesting start time for the calling investor
+    vestingStart[_msgSender()] = block.timestamp;
 
-        // Set vesting end time based on vesting period
-        vestingEnd[_msgSender()] = vestingStart[_msgSender()].add(vestingPeriod);
+    // Set vesting end time based on vesting period
+    vestingEnd[_msgSender()] = block.timestamp.add(vestingPeriod);
 
-        // Initialize vestedAmount for the investor to maximum tokens purchased in Pre-IEO round
-        vestedAmount[_msgSender()] = maxInvestment.div(tokenPrice);
+    // Initialize vestedAmount for the investor to maximum tokens purchased in Pre-IEO round
+    vestedAmount[_msgSender()] = maxInvestment.div(tokenPrice);
 
-        emit VestingStarted(_msgSender(), vestedAmount[_msgSender()], vestingStart[_msgSender()]);
-    }
+    emit VestingStarted(_msgSender(), vestedAmount[_msgSender()], vestingStart[_msgSender()]);
+}
 
     function calculateVestedTokens(address investor) public view returns (uint256) {
         if (vestingStart[investor] == 0) {
@@ -331,50 +321,46 @@ contract LOIPreIEO is Context, Ownable {
         return vestedTokens;
     }
 
-
     function claimVestedTokens() external isVestingActive(_msgSender()) {
-        uint256 vestedTokens = calculateVestedTokens(_msgSender());
-        require(vestedTokens > 0, "No vested tokens to claim");
+    uint256 vestedTokens = calculateVestedTokens(_msgSender());
+    require(vestedTokens > 0, "No vested tokens to claim");
 
-        // Calculate the total number of vested tokens per month based on the vesting schedule
-        uint256 tokensPerMonth = vestedAmount[_msgSender()].div(3);
+    // Calculate the total number of vested tokens per month based on the vesting schedule
+    // uint256 tokensPerMonth = vestedAmount[_msgSender()].div(3);
 
-        // Calculate the number of months since the vesting start
-        uint256 elapsedMonths = (block.timestamp.sub(vestingStart[_msgSender()]).sub(vestingCliff)).div(30 days);
+    // Calculate the number of months since the vesting start
+    // uint256 elapsedMonths = (block.timestamp.sub(vestingStart[_msgSender()]).sub(vestingCliff)).div(30 days);
 
-        // Calculate the number of tokens that should be unlocked based on the elapsed months
-        uint256 tokensToClaim = tokensPerMonth.mul(elapsedMonths);
+    // Calculate the number of tokens that should be unlocked based on the elapsed months
+    // uint256 tokensToClaim = tokensPerMonth.mul(elapsedMonths);
+    uint256 tokensToClaim = vestedAmount[_msgSender()];
 
-        // Ensure that the number of tokens to claim does not exceed the total vested tokens
-        tokensToClaim = tokensToClaim > vestedTokens ? vestedTokens : tokensToClaim;
+    // Ensure that the number of tokens to claim does not exceed the total vested tokens
+    tokensToClaim = tokensToClaim > vestedTokens ? vestedTokens : tokensToClaim;
 
-        // Update the vested amount of the investor
-        vestedAmount[_msgSender()] = vestedAmount[_msgSender()].sub(tokensToClaim);
+    // Update the vested amount of the investor
+    vestedAmount[_msgSender()] = vestedAmount[_msgSender()].sub(tokensToClaim);
 
-        // Transfer the claimed tokens to the investor
-        require(IERC20(LOIContract).transfer(_msgSender(), tokensToClaim), "Token transfer failed");
-    }
-
-
+    // Transfer the claimed tokens to the investor
+    IERC20(LOIContract).transferFrom(address(this), _msgSender(), tokensToClaim);
+}
 
     function getVestedAmount() external view isWhitelisted returns (uint256) {
         return vestedAmount[_msgSender()];
     }
     
     // Withdraw Vested Tokens for a Specific Investor
-    function withdrawVestedTokens() external isVestingActive(_msgSender()) {
-        require(block.timestamp >= vestingEnd[_msgSender()], "Vesting period not over yet");
+function withdrawVestedTokens() external isVestingActive(_msgSender()) nonReentrant {
+    uint256 tokensToWithdraw = calculateVestedTokens(_msgSender());
+    require(tokensToWithdraw > 0, "No vested tokens to withdraw");
 
-        uint256 tokensToWithdraw = calculateVestedTokens(_msgSender());
-        require(tokensToWithdraw > 0, "No vested tokens to withdraw");
+    vestedAmount[_msgSender()] = vestedAmount[_msgSender()].sub(tokensToWithdraw);
 
-        vestedAmount[_msgSender()] = vestedAmount[_msgSender()].sub(tokensToWithdraw);
-
-        // Transfer Tokens to Investor
-        uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
-        require(LOIBalance >= tokensToWithdraw, "Insufficient LOI tokens in contract");
-        require(IERC20(LOIContract).transfer(_msgSender(), tokensToWithdraw), "Token transfer failed");
-    }
+    // Transfer Tokens to Investor
+    uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
+    require(LOIBalance >= tokensToWithdraw, "Insufficient LOI tokens in contract");
+    IERC20(LOIContract).transferFrom(address(this), _msgSender(), tokensToWithdraw);
+}
 
     // Get the number of tokens that have vested for an investor
     function getVestedTokens(address _investor) external view returns (uint256) {
@@ -382,7 +368,7 @@ contract LOIPreIEO is Context, Ownable {
     }
 
     // Function to destroy contract
-    function destroyContract() external onlyOwner {
+    function destroyContract() external onlyOwner nonReentrant {
         uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
         require(LOIBalance > 0, "No LOI tokens in contract");
 
@@ -417,7 +403,6 @@ contract LOIPreIEO is Context, Ownable {
     function getSoldTokens() public view returns (uint256) {
         return tokensSold;
     }
-
 
     // Fallback Function
     fallback() external payable {}
